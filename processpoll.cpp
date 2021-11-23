@@ -169,8 +169,72 @@ void processpool<T>::run_child(){
 		if((number < 0) && (errno != EINTR)){
 			printf("epoll failure\n");
 		}
-	
-	
+		for(int i = 0; i < number; i++){
+			int sockfd = events[i].data.fd;
+			if((sockfd == pipefd) && (events[i].eevents & EPOLLIN)){
+				int client = 0;
+				ret = recv(sockfd, (char*)&client, sizeof(client),0);
+				if(((ret < 0) && (errno != EAGAIN)) || ret == 0){
+					continue;
+				}else{
+					struct sockaddr_in client_address;
+					socklen_t client_addrlength = sizeof(client_address);
+					int connfd = accept(m_listenfd, (struct sockaddr*)&client_address,&client_addrlength)
+					if(connfd < 0){
+						printf("errno is %d\n",errno);
+						continue;
+					}
+					addfd(m_epollfd, connfd);
+					users[connfd].init(m_epollfd, connfd, client_address);
+				}
+			}
+			else if((sockfd == sig_pipefd[0]) && (events[i].events & EPOLLIN)){
+				int sig;
+				char signals[1024];
+				ret =- recv(sig_pipefd[0], signals, sizeof(signals), 0);
+				if(ret <= 0){
+					continue;
+				}
+				else{
+					for(int i = 0; i < ret; i++){
+						switch(signals[i]){
+							case SIGCHLD:
+							{
+								pid_t pid;
+								int stat;
+								while((pid = waitpid(-1, &stat, WNOHANG)) > 0){
+									continue;
+								}
+								break;
+							}
+							case SIGTERM:
+							case SIGINT:
+							{
+								m_stop = true;
+								break;
+							}
+							default:
+							{
+								break;
+							}
+						}
+							
+					
+					}
+				}
+
+			}
+			else if(events[i].events & EPOLLIN){
+				users[sockfd].process();
+			}
+			else{
+				continue;
+			}
+		}	
+		delete []users;
+		users = NULL;
+		close(pipefd);
+		close(m_epollfd);
 	}
 }
 template<typename T>
@@ -271,7 +335,7 @@ void processpool<T>::run_parent(){
 
 	
 	}
-
+	close(m_epollfd);
 
 }
 
