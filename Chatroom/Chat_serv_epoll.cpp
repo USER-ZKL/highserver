@@ -16,10 +16,12 @@ using namespace std;
 #define BUFFER_SIZE 1024
 #define USER_LIMIT 5
 #define MAX_EVENT_NUMBER 1024
+
+	int user_counter = 0;
 struct client_data{
 	int fd;
 	struct sockaddr_in address;
-	char *write_buf;
+	char write_buf[BUFFER_SIZE];
 	char buf[BUFFER_SIZE];
 };
 int setnoblocking(int fd){
@@ -30,7 +32,7 @@ int setnoblocking(int fd){
 
 }
 
-void addfd(int epollfd, int fd, bool enable_et, struct client_data *cld){
+void addfd(int epollfd, int fd, bool enable_et, void *cld){
 	epoll_event event;
 	event.data.ptr = cld;
 	event.events = EPOLLIN | EPOLLRDHUP | EPOLLERR;
@@ -126,10 +128,10 @@ void lt(int number, struct epoll_event *events, int epollfd, int listenfd,int us
 
 }
 */
-void et(int number, struct epoll_event *events, int epollfd, int listenfd,int user_counter,struct vector<client_data> &users){
+void et(int number, struct epoll_event *events, int epollfd, int listenfd, struct vector<client_data> &users){
 		int ret = 0;
 		for(int i = 0; i < number; i++){
-			client_data *scedp = static_cast<struct client_data*>(events[i].data.ptr);
+			struct client_data *scedp = static_cast<struct client_data*>(events[i].data.ptr);
 			//int sockfd = static_cast<struct client_data*>(events[i].data.ptr)->fd;
 			int sockfd = scedp->fd;
 			if(sockfd == listenfd){
@@ -142,19 +144,18 @@ void et(int number, struct epoll_event *events, int epollfd, int listenfd,int us
 					continue;
 				}
 				//user_counter >= USER_LIMIT
-				if(users.size() >= USER_LIMIT){
+				if(user_counter >= USER_LIMIT){
 					const char *info = "too many users\n";
 					printf("%s\n",info);
 					send(connfd, info, strlen(info), 0);
 					continue;
 				}
-
+				user_counter++;
 				struct client_data nclient;
 				nclient.address = client_address;
 				nclient.fd = connfd;
-				users.push_back(nclient);
-				//users[connfd].address = client_address;
-				addfd(epollfd, connfd, true, &users[users.size()-1]);
+				users[user_counter] = nclient;
+				addfd(epollfd, connfd, true, &users[user_counter]);
 				printf("comes a new users, now have %d users\n",user_counter);
 			
 			}
@@ -170,20 +171,22 @@ void et(int number, struct epoll_event *events, int epollfd, int listenfd,int us
 			}
 			else if(events[i].events & EPOLLRDHUP){
 				int index = scedp - &*(users.begin());
-				users[index] = users[users.size()-1];
-				users.pop_back();
+				users[index] = users[user_counter];
+				user_counter--;
 				//users[sockfd] = users[events[user_counter].data.fd];
-				//close(sockfd);
+				close(sockfd);
 				epoll_ctl(epollfd, EPOLL_CTL_DEL, sockfd, NULL);	
 				//user_counter--;
 				printf("a client left");
 			
 			}
 			else if(events[i].events & POLLIN){
+					/*
 					struct epoll_event event;
 					event.data.ptr = scedp;
 					event.events = EPOLLOUT | EPOLLRDHUP | EPOLLERR;
 					epoll_ctl(epollfd, EPOLL_CTL_MOD, sockfd, &event);
+					*/
 					while(1){
 						memset(scedp->buf,'\0',BUFFER_SIZE);
 						ret = recv(sockfd, scedp->buf, BUFFER_SIZE-1, 0);
@@ -191,11 +194,10 @@ void et(int number, struct epoll_event *events, int epollfd, int listenfd,int us
 						if(ret < 0){
 							if(errno != EAGAIN){
 								close(sockfd);
-								//users[sockfd] = users[events[user_counter].data.fd];
 								int dex = scedp - &*(users.begin());
-								users.pop_back();
+								users[dex] = users[user_counter];
 								epoll_ctl(epollfd, EPOLL_CTL_DEL, sockfd, NULL);
-								//user_counter--;
+								user_counter--;
 								break;
 							}
 							printf("read leater");
@@ -204,29 +206,35 @@ void et(int number, struct epoll_event *events, int epollfd, int listenfd,int us
 						else if(ret == 0){
 						}
 						else{
-							for(int j = 0; j < users.size(); ++j){
+							for(int j = 1; j <= user_counter; ++j){
 								int jfd = users[j].fd;
-								if((jfd == sockfd ) || (jfd == listenfd))
+								if(jfd == sockfd )
 									continue;
 								//strcat(users[jfd].write_buf,users[sockfd].buf);
 								//users[jfd].write_buf = users[sockfd].buf;
-								users[j].write_buf = scedp->buf;
+								strcpy(users[j].write_buf,scedp->buf);
+								struct epoll_event event;
+								event.data.ptr = &users[j];
+								event.events = EPOLLOUT | EPOLLRDHUP | EPOLLERR;
+								epoll_ctl(epollfd, EPOLL_CTL_MOD, sockfd, &event);
+//users[j].write_buf = scedp->buf;
 							}
 						}
 					}
 			}	
 			else if(events[i].events & POLLOUT){
+				
+				if(strlen(scedp->write_buf) == 0){
+					continue;
+				}
 					struct epoll_event event;
 					event.data.ptr = events[i].data.ptr;
 					event.events = EPOLLIN | EPOLLRDHUP | EPOLLERR;
 					epoll_ctl(epollfd, EPOLL_CTL_MOD, sockfd, &event);
-
-				if(scedp->write_buf == NULL){
-					continue;
-				}
 					ret = send(sockfd, scedp->write_buf, strlen(scedp->write_buf), 0);
 					//users[sockfd].write_buf = NULL;
-					scedp->write_buf = NULL;
+					//scedp->write_buf = NULL;
+					memset(scedp->write_buf,'\0',BUFFER_SIZE);
 			
 			}
 
@@ -259,8 +267,7 @@ int main(int argc, char *argv[]){
 	assert(ret != -1);
 
 	//struct client_data *users = new client_data[FD_LIMIT];
-	vector<client_data> users;
-	int user_counter = 0;
+	vector<client_data> users(5);
 	
 	int epollfd = epoll_create(USER_LIMIT + 1);
 	assert(epollfd != -1);
@@ -281,7 +288,7 @@ int main(int argc, char *argv[]){
 			printf("poll failure\n");
 			break;
 		}
-		et(number, events, epollfd, listenfd,user_counter,users);
+		et(number, events, epollfd, listenfd,users);
 	}
 	close(listenfd);
 	return 0;
